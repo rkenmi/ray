@@ -34,16 +34,15 @@
 #include "ray/core_worker/store_provider/memory_store/memory_store.h"
 #include "ray/core_worker/task_manager.h"
 #include "ray/core_worker/transport/dependency_resolver.h"
+#include "ray/core_worker/transport/direct_actor_task_submitter.h"
 #include "ray/rpc/grpc_server.h"
 #include "ray/rpc/worker/core_worker_client.h"
-#include "ray/core_worker/transport/direct_actor_task_submitter.h"
 
 namespace ray {
 namespace core {
 
 /// The max time to wait for out-of-order tasks.
 const int kMaxReorderWaitSeconds = 30;
-
 
 /// The class that manages fiber states for Python asyncio actors.
 ///
