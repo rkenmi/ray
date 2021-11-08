@@ -37,6 +37,7 @@
 #include "ray/core_worker/transport/direct_actor_task_submitter.h"
 #include "ray/rpc/grpc_server.h"
 #include "ray/rpc/worker/core_worker_client.h"
+#include "ray/core_worker/transport/direct_actor_task_submitter.h"
 
 namespace ray {
 namespace core {
