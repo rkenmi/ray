@@ -11,6 +11,7 @@ import logging
 
 import boto3
 import botocore
+from ray.autoscaler._private.aws.events import AwsEventManager
 
 from ray.autoscaler._private.util import check_legacy_fields
 from ray.autoscaler.tags import NODE_TYPE_LEGACY_HEAD, NODE_TYPE_LEGACY_WORKER
@@ -228,6 +229,9 @@ def bootstrap_aws(config):
     # config stages below.
     config = _configure_from_launch_template(config)
 
+    # If `events` is provided, set up a callback for cluster setup events
+    config = _configure_events(config)
+
     # If NetworkInterfaces are provided, extract the necessary fields for the
     # config stages below.
     config = _configure_from_network_interfaces(config)
@@ -331,6 +335,25 @@ def _configure_iam_role(config):
     # the head node -- not to workers with the same node type as the head.
     config["head_node"]["IamInstanceProfile"] = {"Arn": profile.arn}
 
+    return config
+
+
+def _configure_events(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Sets up a callback handler for event notifications.
+    Args:
+        config (Dict[str, Any]): config to bootstrap
+    Returns:
+        config (Dict[str, Any]): The input config with cluster event notification
+        data merged into the node config of all available node types. If no
+        cluster event notification data is found, then the config is returned
+        unchanged.
+    """
+    # create a copy of the input config to modify
+    config = copy.deepcopy(config)
+    if config and config.get("events", {}):
+        event_manager = AwsEventManager(config["events"])
+        for event in CreateClusterEvent.__members__.values():
+            event_manager.add_callback(event)
     return config
 
 
