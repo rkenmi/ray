@@ -109,11 +109,15 @@ class AwsEventManager(AwsEventManagerBase):
             sns_topic_arn, params = self.uri, kwargs
             custom_description = event_dict.get("customDescription")
             custom_event_name = event_dict.get("customEventName")
+            ray_parent_session_id = event_dict.get("rayParentSessionId")
+            ray_session_id = event_dict.get("raySessionId")
             message = {
                 **params,
                 "state": event.state,
                 "stateSequence": event.value - 1,  # zero-index sequencing
                 "stateDetailStatus": "SUCCESS",
+                "rayParentSessionId": ray_parent_session_id,
+                "raySessionId": ray_session_id,
                 "timestamp": round(time.time() * 1000),
             }
 
