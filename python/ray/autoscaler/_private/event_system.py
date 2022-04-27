@@ -84,7 +84,8 @@ class ScriptInProgressCustomEvent:
 
     @property
     def value(self) -> int:
-        return self.state_sequence
+        # the state sequence number in 1-based indexing
+        return self.state_sequence + 1
 
     def __init__(self, event_name: str, state_sequence: int):
         self.event_name = event_name
