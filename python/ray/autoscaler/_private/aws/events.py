@@ -56,6 +56,11 @@ class AwsEventManagerBase(ABC):
     def config(self) -> Dict[str, Any]:
         raise NotImplementedError("Configuration is not defined")
 
+    @property
+    @abstractmethod
+    def metadata(self) -> Dict[str, Any]:
+        raise NotImplementedError("Configuration is not defined")
+
     @abstractmethod
     def _sns_callback(self, sns_client: SnsHelper, event_data: Dict[str, Any], **kwargs):
         raise NotImplementedError("SNS callback is not implemented")
@@ -81,6 +86,10 @@ class AwsEventManager(AwsEventManagerBase):
     @property
     def config(self) -> Dict[str, Any]:
         return self.events_config
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return self.parameters
 
     def _sns_callback(self, sns_client: SnsHelper, event_data: Dict[str, Any], **kwargs):
         """SNS callback for sending Ray cluster event data to an SNS topic.
