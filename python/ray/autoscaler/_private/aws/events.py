@@ -18,6 +18,11 @@ logger = logging.getLogger(__name__)
 
 class AwsEventPublisher(EventPublisher):
     def __init__(self, events_config: Dict[str, Any]):
+        """Constructor for event publisher using AWS managed services.
+
+        Args:
+            events_config: A dict loaded from the autoscaler YAML config.
+        """
         super().__init__(events_config)
         self.uri = events_config["notification_uri"]
         self.parameters = events_config.get("parameters", {})
@@ -41,7 +46,8 @@ class AwsEventPublisher(EventPublisher):
     def get_callback_handlers(self) -> List[EventCallbackHandler]:
         """Get callback handlers based on the provided AWS ARN.
 
-        :return: list of callback handlers with their corresponding Callable arguments and keyword arguments
+        Returns: A list of callback handlers with their corresponding Callable arguments and keyword arguments
+
         """
         # TODO: Add support for multiple URI
         handlers = []
@@ -57,6 +63,15 @@ class AwsEventPublisher(EventPublisher):
         return handlers
 
     def _construct_sns_message(self, event_data: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+        """Builds the SNS message payload.
+
+        Args:
+            event_data: Contains event specific data to be inserted into message payload.
+            **kwargs: Additional parameters to insert into message payload.
+
+        Returns: A dict representing the SNS message payload.
+
+        """
         # create a copy of the event data to modify
         event_dict = copy.deepcopy(event_data)
         event: RayEvent = event_dict.pop("event")

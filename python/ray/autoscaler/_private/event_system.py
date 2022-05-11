@@ -7,6 +7,8 @@ from ray.autoscaler._private.cli_logger import cli_logger
 
 
 class EventSequence:
+    """Extensible class for building custom events.
+    """
     @property
     @abstractmethod
     def state(self) -> str:
@@ -24,6 +26,8 @@ class EventSequence:
 
 
 class StateEvent(Enum):
+    """Events to track with an associated state identifier.
+    """
     @property
     def state(self) -> str:
         raise NotImplementedError("State must be implemented by a sub-class")
@@ -134,7 +138,17 @@ class _EventSystem:
 
 
 class EventCallbackHandler:
-    def __init__(self, handler, *args, **kwargs):
+    def __init__(self,
+                 handler: Callable,
+                 *args,
+                 **kwargs):
+        """A helper class containing a callable object with its associated args and kwargs.
+
+        Args:
+            handler: A callable object.
+            *args: Arguments to be passed into the callable.
+            **kwargs: Keyword arguments to be passed into the callable.
+        """
         self._handler = handler
         self._args = args
         self._kwargs = kwargs
@@ -157,9 +171,14 @@ class EventPublisher(ABC):
     parameters: Dict[str, any]
 
     def __init__(self, events_config: Dict[str, Any]):
+        """Constructor for event publisher.
+
+        Args:
+            events_config: A dict loaded from the autoscaler YAML config.
+        """
         self.validate_config(events_config)
         self.events_config = events_config
-        parameters = events_config.get("parameters", {})  # Params will intentionally pass validation each time
+        parameters = events_config.get("parameters", {})
         self.validate_params(parameters)
         self.parameters = parameters
 
