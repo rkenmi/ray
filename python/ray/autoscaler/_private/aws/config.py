@@ -11,7 +11,7 @@ import logging
 
 import boto3
 import botocore
-from ray.autoscaler._private.aws.events import AwsEventManager
+from ray.autoscaler._private.aws.events import AwsEventPublisher
 
 from ray.autoscaler._private.util import check_legacy_fields
 from ray.autoscaler.tags import NODE_TYPE_LEGACY_HEAD, NODE_TYPE_LEGACY_WORKER
@@ -351,7 +351,7 @@ def _configure_events(config: Dict[str, Any]) -> Dict[str, Any]:
     # create a copy of the input config to modify
     config = copy.deepcopy(config)
     if config and config.get("events", {}):
-        event_manager = AwsEventManager(config["events"])
+        event_manager = AwsEventPublisher(config["events"])
         for event in CreateClusterEvent.__members__.values():
             event_manager.add_callback(event)
     return config

@@ -1,20 +1,35 @@
 import functools
 from enum import Enum, auto
+from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from ray.autoscaler._private.cli_logger import cli_logger
 
 
-class States(Enum):
-    UNKNOWN = None
-    NEW = 1
-    DISPATCHED = 2
-    STARTED = 3
-    IN_PROGRESS = 4
-    COMPLETED = 5
+class EventSequence:
+    @property
+    @abstractmethod
+    def state(self) -> str:
+        raise NotImplementedError("State must be implemented by a sub-class")
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        raise NotImplementedError("Event name must be implemented by a sub-class")
+
+    @property
+    @abstractmethod
+    def value(self) -> int:
+        raise NotImplementedError("Sequence value must be implemented by a sub-class")
 
 
-class CreateClusterEvent(Enum):
+class StateEvent(Enum):
+    @property
+    def state(self) -> str:
+        raise NotImplementedError("State must be implemented by a sub-class")
+
+
+class CreateClusterEvent(StateEvent):
     """Events to track in ray.autoscaler.sdk.create_or_update_cluster.
 
     Attributes:
@@ -36,7 +51,7 @@ class CreateClusterEvent(Enum):
     """
     @property
     def state(self) -> str:
-        return States.DISPATCHED.name
+        return "DISPATCHED"
 
     up_started = auto()
     ssh_keypair_downloaded = auto()
@@ -51,62 +66,7 @@ class CreateClusterEvent(Enum):
     cluster_booting_completed = auto()
 
 
-class ScriptStartedEvent(Enum):
-    """Events to track for Ray scripts that are executed.
-    """
-    @property
-    def state(self) -> str:
-        return States.STARTED.name
-
-    start_initializing = auto()
-
-
-class ScriptInProgressEvent(Enum):
-    """Events to track during execution of Ray scripts.
-    """
-    @property
-    def state(self) -> str:
-        return States.IN_PROGRESS.name
-
-    in_progress = auto()
-
-
-class ScriptInProgressCustomEvent:
-    """Custom, user-defined events to track during execution of Ray scripts.
-    """
-    @property
-    def state(self) -> str:
-        return States.IN_PROGRESS.name
-
-    @property
-    def name(self) -> str:
-        return self.event_name
-
-    @property
-    def value(self) -> int:
-        # the state sequence number in 1-based indexing
-        return self.state_sequence + 1
-
-    def __init__(self, event_name: str, state_sequence: int):
-        self.event_name = event_name
-        self.state_sequence = state_sequence
-
-
-class ScriptCompletedEvent(Enum):
-    """Events to track for Ray scripts that are executed.
-    """
-    @property
-    def state(self) -> str:
-        return States.COMPLETED.name
-
-    complete_success = auto()
-
-
-RayEvent = Union[CreateClusterEvent, ScriptStartedEvent, ScriptInProgressEvent, ScriptInProgressCustomEvent,
-                 ScriptCompletedEvent]
-event_enums = [CreateClusterEvent, ScriptStartedEvent, ScriptInProgressEvent, ScriptCompletedEvent]
-event_enum_values = [sequence for event in event_enums
-                     for sequence in event.__members__.values()]
+RayEvent = Union[EventSequence, StateEvent]
 
 
 class _EventSystem:
@@ -122,7 +82,7 @@ class _EventSystem:
 
     def add_callback_handler(
         self,
-        event: str,
+        event: RayEvent,
         callback: Union[Callable[[Dict], None], List[Callable[[Dict], None]]],
         *args,
         **kwargs
@@ -130,7 +90,7 @@ class _EventSystem:
         """Stores callback handler for event.
 
         Args:
-            event (str): Event that callback should be called on. See
+            event (RayEvent): Event that callback should be called on. See
                 CreateClusterEvent for details on the events available to be
                 registered against.
             callback (Callable[[Dict], None]): Callable object that is invoked
@@ -138,12 +98,6 @@ class _EventSystem:
             *args: Variable length arguments to be injected into callbacks.
             **kwargs: Keyword arguments to be injected into callbacks.
         """
-        if event not in event_enum_values:
-            cli_logger.warning(
-                f"{event} is not currently tracked, and this"
-                " callback will not be invoked."
-            )
-
         callback = functools.partial(callback, *args, **kwargs)
         self.callback_map.setdefault(event, []).extend(
             [callback] if type(callback) is not list else callback
@@ -163,7 +117,7 @@ class _EventSystem:
         if event_data is None:
             event_data = {}
 
-        event_data["event"] = event
+        event_data["event"] = event_data["event_name"] = event
         if event in self.callback_map:
             for callback in self.callback_map[event]:
                 callback(event_data)
@@ -177,6 +131,73 @@ class _EventSystem:
         """
         if event in self.callback_map:
             del self.callback_map[event]
+
+
+class EventCallbackHandler:
+    def __init__(self, handler, *args, **kwargs):
+        self._handler = handler
+        self._args = args
+        self._kwargs = kwargs
+
+    @property
+    def handler(self):
+        return self._handler
+
+    @property
+    def args(self):
+        return self._args
+
+    @property
+    def kwargs(self):
+        return self._kwargs
+
+
+class EventPublisher(ABC):
+    uri: str
+    parameters: Dict[str, any]
+
+    def __init__(self, events_config: Dict[str, Any]):
+        self.validate_config(events_config)
+        self.events_config = events_config
+        parameters = events_config.get("parameters", {})  # Params will intentionally pass validation each time
+        self.validate_params(parameters)
+        self.parameters = parameters
+
+    def add_callback(self, event: RayEvent):
+        """Adds a callback handler for a given event.
+
+        Args:
+            event: The event to invoke the callback handler for
+        """
+        callback_handlers: List[EventCallbackHandler] = self.get_callback_handlers()
+        for cb in callback_handlers:
+            global_event_system.add_callback_handler(event, cb.handler, *cb.args, **cb.kwargs)
+            cli_logger.info(f"Added callback handler {cb.handler.__name__} for event {event.name}")
+
+    def get_callback_handlers(self) -> List[EventCallbackHandler]:
+        raise NotImplementedError("Event publisher sub-classes must provide their own callback handlers.")
+
+    @staticmethod
+    def publish(event: RayEvent, event_data: Optional[Dict[str, Any]] = None):
+        global_event_system.execute_callback(event, event_data)
+
+    @abstractmethod
+    def validate_config(self, events_config: Dict[str, Any]):
+        raise NotImplementedError("Method is not implemented")
+
+    @abstractmethod
+    def validate_params(self, params_config: Dict[str, Any]):
+        raise NotImplementedError("Method is not implemented")
+
+    @property
+    @abstractmethod
+    def config(self) -> Dict[str, Any]:
+        raise NotImplementedError("Configuration is not defined")
+
+    @property
+    @abstractmethod
+    def params(self) -> Dict[str, Any]:
+        raise NotImplementedError("Configuration is not defined")
 
 
 global_event_system = _EventSystem()
