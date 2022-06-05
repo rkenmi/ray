@@ -74,28 +74,17 @@ class AwsEventPublisher(EventPublisher):
         """
         # create a copy of the event data to modify
         event_dict = copy.deepcopy(event_data)
-        event: RayEvent = event_dict.pop("event")
+        event, _ = event_dict.pop("event"), event_dict.pop("event_name")
         node_context: NodeContext = event_dict.get("node_context", {})
         sns_topic_arn, params = self.uri, kwargs
-        custom_description = event_dict.get("customDescription")
-        custom_event_name = event_dict.get("customEventName")
-        ray_parent_session_id = event_dict.get("rayParentSessionId")
-        ray_session_id = event_dict.get("raySessionId")
         message = {
+            **event_dict,
             **params,
             "state": event.state,
             "stateSequence": event.value - 1,  # zero-index sequencing
             "stateDetailStatus": "SUCCESS",
-            "rayParentSessionId": ray_parent_session_id,
-            "raySessionId": ray_session_id,
             "timestamp": round(time.time() * 1000),
         }
-
-        if custom_event_name:
-            message["eventName"] = custom_event_name
-
-        if custom_description:
-            message["stateDetailDescription"] = custom_description
 
         if node_context:
             message["rayNodeId"] = node_context["node_id"]
