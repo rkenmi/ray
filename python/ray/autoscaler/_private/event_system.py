@@ -168,7 +168,7 @@ class EventCallbackHandler:
 
 class EventPublisher(ABC):
     uri: str
-    parameters: Dict[str, any]
+    _event_base_params: Dict[str, Any]
 
     def __init__(self, events_config: Dict[str, Any]):
         """Constructor for event publisher.
@@ -178,9 +178,9 @@ class EventPublisher(ABC):
         """
         self.validate_config(events_config)
         self.events_config = events_config
-        parameters = events_config.get("parameters", {})
-        self.validate_params(parameters)
-        self.parameters = parameters
+        _event_base_params = events_config.get("parameters", {})
+        self.validate_event_base_params(_event_base_params)
+        self._event_base_params = _event_base_params
 
     def add_callback(self, event: RayEvent):
         """Adds a callback handler for a given event.
@@ -205,18 +205,30 @@ class EventPublisher(ABC):
         raise NotImplementedError("Method is not implemented")
 
     @abstractmethod
-    def validate_params(self, params_config: Dict[str, Any]):
+    def validate_event_base_params(self, params_config: Dict[str, Any]):
         raise NotImplementedError("Method is not implemented")
 
     @property
     @abstractmethod
     def config(self) -> Dict[str, Any]:
+        """Configuration for event notifications.
+        Holds outgoing event parameters, event notification URI, and other additional metadata.
+
+        Returns: configuration dict
+
+        """
         raise NotImplementedError("Configuration is not defined")
 
     @property
     @abstractmethod
-    def params(self) -> Dict[str, Any]:
+    def event_base_params(self) -> Dict[str, Any]:
+        """Base parameters that will be injected into every outgoing event notification.
+
+        Returns: parameters dict
+
+        """
         raise NotImplementedError("Configuration is not defined")
 
 
 global_event_system = _EventSystem()
+

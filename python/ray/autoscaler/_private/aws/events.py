@@ -25,22 +25,22 @@ class AwsEventPublisher(EventPublisher):
         """
         super().__init__(events_config)
         self.uri = events_config["notification_uri"]
-        self.parameters = events_config.get("parameters", {})
+        self._event_base_params = events_config.get("parameters", {})
 
     @property
     def config(self) -> Dict[str, Any]:
         return self.events_config
 
     @property
-    def params(self) -> Dict[str, Any]:
-        return self.parameters
+    def event_base_params(self) -> Dict[str, Any]:
+        return self._event_base_params
 
     def validate_config(self, events_config: Dict[str, Any]):
         notification_uri = events_config["notification_uri"]
         assert notification_uri is not None, f"`notification_uri` is a required field in `events`"
         assert notification_uri.startswith("arn:aws"), f"Invalid ARN specified: {notification_uri}"
 
-    def validate_params(self, params_config: Dict[str, Any]):
+    def validate_event_base_params(self, params_config: Dict[str, Any]):
         assert params_config is not None
 
     def get_callback_handlers(self) -> List[EventCallbackHandler]:
@@ -52,13 +52,15 @@ class AwsEventPublisher(EventPublisher):
         # TODO: Add support for multiple URI
         handlers = []
         if self.uri.startswith("arn:aws:sns"):
-            handlers.append(EventCallbackHandler(self._sns_callback, SnsHelper(self._get_region()), **self.parameters))
+            handlers.append(EventCallbackHandler(self._sns_callback,
+                                                 SnsHelper(self._get_region()),
+                                                 **self._event_base_params))
         elif self.uri.startswith("arn:aws:lambda"):
-            handlers.append(EventCallbackHandler(self._lambda_callback, None, **self.parameters))
+            handlers.append(EventCallbackHandler(self._lambda_callback, None, **self._event_base_params))
         elif self.uri.startswith("arn:aws:logs"):
-            handlers.append(EventCallbackHandler(self._cloudwatch_callback, None, **self.parameters))
+            handlers.append(EventCallbackHandler(self._cloudwatch_callback, None, **self._event_base_params))
         elif self.uri.startswith("arn:aws:apigateway"):
-            handlers.append(EventCallbackHandler(self._api_gateway_callback, None, **self.parameters))
+            handlers.append(EventCallbackHandler(self._api_gateway_callback, None, **self._event_base_params))
 
         return handlers
 
