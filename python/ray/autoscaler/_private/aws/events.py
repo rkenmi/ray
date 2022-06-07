@@ -52,13 +52,13 @@ class AwsEventPublisher(EventPublisher):
         # TODO: Add support for multiple URI
         handlers = []
         if self.uri.startswith("arn:aws:sns"):
-            handlers.append(EventCallbackHandler(self._sns_callback, SnsHelper(self._get_region())))
+            handlers.append(EventCallbackHandler(self._sns_callback, SnsHelper(self._get_region()), **self.parameters))
         elif self.uri.startswith("arn:aws:lambda"):
-            handlers.append(EventCallbackHandler(self._lambda_callback, None))
+            handlers.append(EventCallbackHandler(self._lambda_callback, None, **self.parameters))
         elif self.uri.startswith("arn:aws:logs"):
-            handlers.append(EventCallbackHandler(self._cloudwatch_callback, None))
+            handlers.append(EventCallbackHandler(self._cloudwatch_callback, None, **self.parameters))
         elif self.uri.startswith("arn:aws:apigateway"):
-            handlers.append(EventCallbackHandler(self._api_gateway_callback, None))
+            handlers.append(EventCallbackHandler(self._api_gateway_callback, None, **self.parameters))
 
         return handlers
 
