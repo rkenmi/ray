@@ -1,14 +1,14 @@
 import copy
 import os
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 
 from ray_release.buildkite.concurrency import CONCURRENY_GROUPS, get_concurrency_group
-from ray_release.config import Test, get_test_env_var
+from ray_release.config import Test, get_test_env_var, as_smoke_test
 from ray_release.exception import ReleaseTestConfigError
 
 DEFAULT_ARTIFACTS_DIR_HOST = "/tmp/ray_release_test_artifacts"
 
-DEFAULT_STEP_TEMPLATE = {
+DEFAULT_STEP_TEMPLATE: Dict[str, Any] = {
     "env": {
         "ANYSCALE_CLOUD_ID": "cld_4F7k8814aZzGG8TNUGPKnc",
         "ANYSCALE_PROJECT": "prj_2xR6uT6t7jJuu1aCwWMsle",
@@ -76,16 +76,30 @@ def get_step(
             )
         concurrency_limit = CONCURRENY_GROUPS[concurrency_group]
     else:
-        concurrency_group, concurrency_limit = get_concurrency_group(test)
+        if smoke_test:
+            concurrency_test = as_smoke_test(test)
+        else:
+            concurrency_test = test
+        concurrency_group, concurrency_limit = get_concurrency_group(concurrency_test)
 
     step["concurrency_group"] = concurrency_group
     step["concurrency"] = concurrency_limit
 
     step["priority"] = priority_val
 
-    step["label"] = test["name"]
+    # If a test is not stable, allow to soft fail
+    stable = test.get("stable", True)
+    if not stable:
+        step["soft_fail"] = True
+        full_label = "[unstable] "
+    else:
+        full_label = ""
+
+    full_label += test["name"]
     if smoke_test:
-        step["label"] += " [smoke test] "
-    step["label"] += f" ({label})"
+        full_label += " [smoke test] "
+    full_label += f" ({label})"
+
+    step["label"] = full_label
 
     return step

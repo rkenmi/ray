@@ -33,9 +33,12 @@ from ray.runtime_env import RuntimeEnv
 
 
 def test_get_wheel_filename():
-    ray_version = "2.0.0.dev0"
+    ray_version = "3.0.0.dev0"
     for sys_platform in ["darwin", "linux", "win32"]:
         for py_version in ["36", "37", "38", "39"]:
+            if sys_platform == "win32" and py_version == "36":
+                # Windows wheels are not built for py3.6 anymore
+                continue
             filename = get_wheel_filename(sys_platform, ray_version, py_version)
             prefix = "https://s3-us-west-2.amazonaws.com/ray-wheels/latest/"
             url = f"{prefix}{filename}"
@@ -43,10 +46,13 @@ def test_get_wheel_filename():
 
 
 def test_get_master_wheel_url():
-    ray_version = "2.0.0.dev0"
-    test_commit = "58a73821fbfefbf53a19b6c7ffd71e70ccf258c7"
+    ray_version = "3.0.0.dev0"
+    test_commit = "c3ac6fcf3fcc8cfe6930c9a820add0e187bff579"
     for sys_platform in ["darwin", "linux", "win32"]:
         for py_version in ["36", "37", "38", "39"]:
+            if sys_platform == "win32" and py_version == "36":
+                # Windows wheels are not built for py3.6 anymore
+                continue
             url = get_master_wheel_url(
                 test_commit, sys_platform, ray_version, py_version
             )
@@ -145,52 +151,6 @@ def test_container_option_serialize(runtime_env_class):
     assert job_config_serialized.count(b"--name=test") == 1
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="conda in runtime_env unsupported on Windows."
-)
-@pytest.mark.parametrize("runtime_env_class", [dict, RuntimeEnv])
-def test_invalid_conda_env(shutdown_only, runtime_env_class):
-    ray.init()
-
-    @ray.remote
-    def f():
-        pass
-
-    @ray.remote
-    class A:
-        def f(self):
-            pass
-
-    start = time.time()
-    bad_env = runtime_env_class(conda={"dependencies": ["this_doesnt_exist"]})
-    with pytest.raises(
-        RuntimeEnvSetupError,
-        # The actual error message should be included in the exception.
-        match="ResolvePackageNotFound",
-    ):
-        ray.get(f.options(runtime_env=bad_env).remote())
-    first_time = time.time() - start
-
-    # Check that another valid task can run.
-    ray.get(f.remote())
-
-    a = A.options(runtime_env=bad_env).remote()
-    with pytest.raises(
-        ray.exceptions.RuntimeEnvSetupError, match="ResolvePackageNotFound"
-    ):
-        ray.get(a.f.remote())
-
-    # The second time this runs it should be faster as the error is cached.
-    start = time.time()
-    with pytest.raises(RuntimeEnvSetupError, match="ResolvePackageNotFound"):
-        ray.get(f.options(runtime_env=bad_env).remote())
-
-    assert (time.time() - start) < (first_time / 2.0)
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="runtime_env unsupported on Windows."
-)
 @pytest.mark.parametrize("runtime_env_class", [dict, RuntimeEnv])
 def test_no_spurious_worker_startup(shutdown_only, runtime_env_class):
     """Test that no extra workers start up during a long env installation."""
@@ -276,7 +236,7 @@ def test_runtime_env_no_spurious_resource_deadlock_msg(
     assert len(errors) == 0
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="pip not supported on Windows.")
+@pytest.mark.skipif(sys.platform == "win32", reason="Hangs on windows.")
 @pytest.mark.parametrize("runtime_env_class", [dict, RuntimeEnv])
 def test_failed_job_env_no_hang(shutdown_only, runtime_env_class):
     """Test that after a failed job-level env, tasks can still be run."""

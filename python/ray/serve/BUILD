@@ -101,6 +101,14 @@ py_test(
 )
 
 py_test(
+    name = "test_logging",
+    size = "medium",
+    srcs = serve_tests_srcs,
+    tags = ["exclusive", "team:serve"],
+    deps = [":serve_lib"],
+)
+
+py_test(
     name = "test_metrics",
     size = "medium",
     srcs = serve_tests_srcs,
@@ -244,7 +252,7 @@ py_test(
 
 py_test(
     name = "test_standalone2",
-    size = "medium",
+    size = "large",
     srcs = serve_tests_srcs,
     tags = ["exclusive", "team:serve"],
     deps = [":serve_lib"],
@@ -287,7 +295,15 @@ py_test(
     name = "test_runtime_env",
     size = "large",
     srcs = serve_tests_srcs,
-    tags = ["exclusive", "post_wheel_build", "team:serve"],
+    tags = ["exclusive", "team:serve", "post_wheel_build"],
+    deps = [":serve_lib"],
+)
+
+py_test(
+    name = "test_runtime_env_2",
+    size = "large",
+    srcs = serve_tests_srcs,
+    tags = ["exclusive", "team:serve", "post_wheel_build"],
     deps = [":serve_lib"],
 )
 
@@ -333,7 +349,7 @@ py_test(
 
 py_test(
     name = "test_pipeline_driver",
-    size = "small",
+    size = "medium",
     srcs = serve_tests_srcs,
     tags = ["exclusive", "team:serve"],
     deps = [":serve_lib"],
@@ -348,8 +364,16 @@ py_test(
 )
 
 py_test(
-    name = "test_pipeline_ingress_deployment",
+    name = "test_deployment_graph_classmethod",
     size = "medium",
+    srcs = serve_tests_srcs,
+    tags = ["exclusive", "team:serve"],
+    deps = [":serve_lib"],
+)
+
+py_test(
+    name = "test_pipeline_ingress_deployment",
+    size = "small",
     srcs = serve_tests_srcs,
     tags = ["exclusive", "team:serve"],
     deps = [":serve_lib"],
@@ -481,6 +505,14 @@ py_test(
     srcs = pipeline_tests_srcs,
     tags = ["exclusive", "team:serve"],
     deps = [":serve_lib"],
+)
+
+py_test(
+    name = "snippet_model_ensemble",
+    size = "small",
+    srcs = glob(["examples/doc/*.py"]),
+    tags = ["exclusive", "team:serve"],
+    deps = [":serve_lib"]
 )
 
 py_test(

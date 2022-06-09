@@ -15,7 +15,13 @@ parts:
           - file: data/getting-started
           - file: data/key-concepts
           - file: data/user-guide
-          - file: data/examples/big_data_ingestion
+          - file: data/examples/index
+            sections:
+              - file: data/examples/nyc_taxi_basic_processing
+                title: Processing the NYC taxi dataset
+              - file: data/examples/big_data_ingestion
+                title: Large-scale ML Ingest
+          - file: data/faq
           - file: data/package-ref
           - file: data/integrations
 
@@ -24,10 +30,8 @@ parts:
         sections:
           - file: train/user_guide
           - file: train/examples
+          - file: train/faq
           - file: train/architecture
-          - file: train/migration-guide
-          - file: raysgd/raysgd
-            title: "RaySGD v1: Distributed Training Wrappers"
           - file: train/api
 
       - file: tune/index
@@ -67,9 +71,10 @@ parts:
           - file: serve/end_to_end_tutorial
           - file: serve/core-apis
           - file: serve/http-servehandle
-          - file: serve/deployment
           - file: serve/ml-models
           - file: serve/deployment-graph
+          - file: serve/deployment
+          - file: serve/monitoring
           - file: serve/performance
           - file: serve/architecture
           - file: serve/tutorials/index
@@ -133,6 +138,7 @@ parts:
       - file: cluster/cloud
       - file: cluster/deploy
       - file: cluster/api
+      - file: cluster/usage-stats
 
   - caption: References
     chapters:

@@ -1,5 +1,5 @@
 import builtins
-from typing import Any, Generic, List, Callable, Union, Tuple, Iterable
+from typing import Any, Generic, List, Dict, Callable, Union, Tuple, Iterable
 
 import numpy as np
 
@@ -55,6 +55,7 @@ class Datasource(Generic[T]):
         self,
         blocks: List[ObjectRef[Block]],
         metadata: List[BlockMetadata],
+        ray_remote_args: Dict[str, Any],
         **write_args,
     ) -> List[ObjectRef[WriteResult]]:
         """Launch Ray tasks for writing blocks out to the datasource.
@@ -63,6 +64,7 @@ class Datasource(Generic[T]):
             blocks: List of data block references. It is recommended that one
                 write task be generated per block.
             metadata: List of block metadata.
+            ray_remote_args: Kwargs passed to ray.remote in the write tasks.
             write_args: Additional kwargs to pass to the datasource impl.
 
         Returns:
@@ -161,9 +163,11 @@ class RangeDatasource(Datasource[Union[ArrowRow, int]]):
     """An example datasource that generates ranges of numbers from [0..n).
 
     Examples:
-        >>> source = RangeDatasource()
-        >>> ray.data.read_datasource(source, n=10).take()
-        ... [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        >>> import ray
+        >>> from ray.data.datasource import RangeDatasource
+        >>> source = RangeDatasource() # doctest: +SKIP
+        >>> ray.data.read_datasource(source, n=10).take() # doctest: +SKIP
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
     """
 
     def prepare_read(
@@ -180,18 +184,19 @@ class RangeDatasource(Datasource[Union[ArrowRow, int]]):
         # from an external system instead of generating dummy data.
         def make_block(start: int, count: int) -> Block:
             if block_format == "arrow":
-                return pyarrow.Table.from_arrays(
+                import pyarrow as pa
+
+                return pa.Table.from_arrays(
                     [np.arange(start, start + count)], names=["value"]
                 )
             elif block_format == "tensor":
-                tensor = TensorArray(
-                    np.ones(tensor_shape, dtype=np.int64)
-                    * np.expand_dims(
-                        np.arange(start, start + count),
-                        tuple(range(1, 1 + len(tensor_shape))),
-                    )
+                import pyarrow as pa
+
+                tensor = np.ones(tensor_shape, dtype=np.int64) * np.expand_dims(
+                    np.arange(start, start + count),
+                    tuple(range(1, 1 + len(tensor_shape))),
                 )
-                return pyarrow.Table.from_pydict({"value": tensor})
+                return BlockAccessor.batch_to_block(tensor)
             else:
                 return list(builtins.range(start, start + count))
 
@@ -200,21 +205,17 @@ class RangeDatasource(Datasource[Union[ArrowRow, int]]):
             count = min(block_size, n - i)
             if block_format == "arrow":
                 _check_pyarrow_version()
-                import pyarrow
+                import pyarrow as pa
 
-                schema = pyarrow.Table.from_pydict({"value": [0]}).schema
+                schema = pa.Table.from_pydict({"value": [0]}).schema
             elif block_format == "tensor":
                 _check_pyarrow_version()
-                from ray.data.extensions import TensorArray
-                import pyarrow
+                import pyarrow as pa
 
-                tensor = TensorArray(
-                    np.ones(tensor_shape, dtype=np.int64)
-                    * np.expand_dims(
-                        np.arange(0, 10), tuple(range(1, 1 + len(tensor_shape)))
-                    )
+                tensor = np.ones(tensor_shape, dtype=np.int64) * np.expand_dims(
+                    np.arange(0, 10), tuple(range(1, 1 + len(tensor_shape)))
                 )
-                schema = pyarrow.Table.from_pydict({"value": tensor}).schema
+                schema = BlockAccessor.batch_to_block(tensor).schema
             elif block_format == "list":
                 schema = int
             else:
@@ -238,15 +239,19 @@ class DummyOutputDatasource(Datasource[Union[ArrowRow, int]]):
     """An example implementation of a writable datasource for testing.
 
     Examples:
-        >>> output = DummyOutputDatasource()
-        >>> ray.data.range(10).write_datasource(output)
-        >>> assert output.num_ok == 1
+        >>> import ray
+        >>> from ray.data.datasource import DummyOutputDatasource
+        >>> output = DummyOutputDatasource() # doctest: +SKIP
+        >>> ray.data.range(10).write_datasource(output) # doctest: +SKIP
+        >>> assert output.num_ok == 1 # doctest: +SKIP
     """
 
     def __init__(self):
+        ctx = DatasetContext.get_current()
+
         # Setup a dummy actor to send the data. In a real datasource, write
         # tasks would send data to an external system instead of a Ray actor.
-        @ray.remote
+        @ray.remote(scheduling_strategy=ctx.scheduling_strategy)
         class DataSink:
             def __init__(self):
                 self.rows_written = 0
@@ -273,6 +278,7 @@ class DummyOutputDatasource(Datasource[Union[ArrowRow, int]]):
         self,
         blocks: List[ObjectRef[Block]],
         metadata: List[BlockMetadata],
+        ray_remote_args: Dict[str, Any],
         **write_args,
     ) -> List[ObjectRef[WriteResult]]:
         tasks = []
@@ -294,10 +300,13 @@ class RandomIntRowDatasource(Datasource[ArrowRow]):
     """An example datasource that generates rows with random int64 columns.
 
     Examples:
-        >>> source = RandomIntRowDatasource()
-        >>> ray.data.read_datasource(source, n=10, num_columns=2).take()
-        ... {'c_0': 1717767200176864416, 'c_1': 999657309586757214}
-        ... {'c_0': 4983608804013926748, 'c_1': 1160140066899844087}
+        >>> import ray
+        >>> from ray.data.datasource import RandomIntRowDatasource
+        >>> source = RandomIntRowDatasource() # doctest: +SKIP
+        >>> ray.data.read_datasource( # doctest: +SKIP
+        ...     source, n=10, num_columns=2).take()
+        {'c_0': 1717767200176864416, 'c_1': 999657309586757214}
+        {'c_0': 4983608804013926748, 'c_1': 1160140066899844087}
     """
 
     def prepare_read(
@@ -329,6 +338,7 @@ class RandomIntRowDatasource(Datasource[ArrowRow]):
                 size_bytes=8 * count * num_columns,
                 schema=schema,
                 input_files=None,
+                exec_stats=None,
             )
             read_tasks.append(
                 ReadTask(

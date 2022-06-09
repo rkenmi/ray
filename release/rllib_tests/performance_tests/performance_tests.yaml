@@ -53,8 +53,6 @@ apex-breakoutnoframeskip-v4:
             epsilon_timesteps: 200000
             final_epsilon: 0.01
         prioritized_replay_alpha: 0.5
-        final_prioritized_replay_beta: 1.0
-        prioritized_replay_beta_annealing_timesteps: 2000000
         num_gpus: 1
         num_workers: 8
         num_envs_per_worker: 8
@@ -114,7 +112,7 @@ cql-halfcheetahbulletenv-v0:
         prioritized_replay: false
         train_batch_size: 256
         target_network_update_freq: 0
-        timesteps_per_iteration: 1000
+        min_train_timesteps_per_reporting: 1000
         learning_starts: 256
         optimization:
             actor_learning_rate: 0.0001

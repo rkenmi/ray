@@ -49,6 +49,10 @@ RAY_CONFIG(int64_t, handler_warning_timeout_ms, 1000)
 
 /// The duration between heartbeats sent by the raylets.
 RAY_CONFIG(uint64_t, raylet_heartbeat_period_milliseconds, 1000)
+
+/// The duration between loads pulled by GCS
+RAY_CONFIG(uint64_t, gcs_pull_resource_loads_period_milliseconds, 1000)
+
 /// If a component has not sent a heartbeat in the last num_heartbeats_timeout
 /// heartbeat intervals, the raylet monitor process will report
 /// it as dead to the db_client table.
@@ -140,7 +144,7 @@ RAY_CONFIG(float, scheduler_spread_threshold, 0.5);
 /// Whether to only report the usage of pinned copies of objects in the
 /// object_store_memory resource. This means nodes holding secondary copies only
 /// will become eligible for removal in the autoscaler.
-RAY_CONFIG(bool, scheduler_report_pinned_bytes_only, false)
+RAY_CONFIG(bool, scheduler_report_pinned_bytes_only, true)
 
 // The max allowed size in bytes of a return object from direct actor calls.
 // Objects larger than this size will be spilled/promoted to plasma.
@@ -160,7 +164,7 @@ RAY_CONFIG(uint64_t, actor_creation_min_retries, 3)
 
 /// Warn if more than this many tasks are queued for submission to an actor.
 /// It likely indicates a bug in the user code.
-RAY_CONFIG(int64_t, actor_excess_queueing_warn_threshold, 5000)
+RAY_CONFIG(uint64_t, actor_excess_queueing_warn_threshold, 5000)
 
 /// When trying to resolve an object, the initial period that the raylet will
 /// wait before contacting the object's owner to check if the object is still
@@ -214,7 +218,7 @@ RAY_CONFIG(int64_t, kill_worker_timeout_milliseconds, 100)
 
 /// The duration that we wait after the worker is launched before the
 /// starting_worker_timeout_callback() is called.
-RAY_CONFIG(int64_t, worker_register_timeout_seconds, 30)
+RAY_CONFIG(int64_t, worker_register_timeout_seconds, 60)
 
 /// The maximum number of workers to iterate whenever we analyze the resources usage.
 RAY_CONFIG(uint32_t, worker_max_resource_analysis_iteration, 128);
@@ -289,12 +293,8 @@ RAY_CONFIG(uint32_t, maximum_gcs_dead_node_cached_count, 1000)
 RAY_CONFIG(int, gcs_resource_report_poll_period_ms, 100)
 // The number of concurrent polls to polls to GCS.
 RAY_CONFIG(uint64_t, gcs_max_concurrent_resource_pulls, 100)
-// Feature flag to enable grpc based pubsub in GCS.
-RAY_CONFIG(bool, gcs_grpc_based_pubsub, true)
 // The storage backend to use for the GCS. It can be either 'redis' or 'memory'.
 RAY_CONFIG(std::string, gcs_storage, "memory")
-// Feature flag to enable GCS based bootstrapping.
-RAY_CONFIG(bool, bootstrap_with_gcs, true)
 
 /// Duration to sleep after failing to put an object in plasma because it is full.
 RAY_CONFIG(uint32_t, object_store_full_delay_ms, 10)
@@ -351,7 +351,12 @@ RAY_CONFIG(int64_t, task_rpc_inlined_bytes_limit, 10 * 1024 * 1024)
 RAY_CONFIG(uint64_t, max_pending_lease_requests_per_scheduling_category, 10)
 
 /// Wait timeout for dashboard agent register.
+#ifdef _WIN32
+// agent startup time can involve creating conda environments
+RAY_CONFIG(uint32_t, agent_register_timeout_ms, 100 * 1000)
+#else
 RAY_CONFIG(uint32_t, agent_register_timeout_ms, 30 * 1000)
+#endif
 
 /// If the agent manager fails to communicate with the dashboard agent, we will retry
 /// after this interval.
@@ -453,6 +458,9 @@ RAY_CONFIG(float, max_task_args_memory_fraction, 0.7)
 /// The maximum number of objects to publish for each publish calls.
 RAY_CONFIG(int, publish_batch_size, 5000)
 
+/// Maximum size in bytes of buffered messages per entity, in Ray publisher.
+RAY_CONFIG(int, publisher_entity_buffer_max_bytes, 10 << 20)
+
 /// The maximum command batch size.
 RAY_CONFIG(int64_t, max_command_batch_size, 2000)
 
@@ -498,6 +506,9 @@ RAY_CONFIG(std::string, custom_unit_instance_resources, "")
 
 // Maximum size of the batches when broadcasting resources to raylet.
 RAY_CONFIG(uint64_t, resource_broadcast_batch_size, 512);
+
+// Maximum ray sync message batch size in bytes (1MB by default) between nodes.
+RAY_CONFIG(uint64_t, max_sync_message_batch_bytes, 1 * 1024 * 1024);
 
 // If enabled and worker stated in container, the container will add
 // resource limit.

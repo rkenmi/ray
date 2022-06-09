@@ -1,5 +1,4 @@
 import time
-import asyncio
 from dataclasses import dataclass
 import functools
 import logging
@@ -21,13 +20,11 @@ from ray.workflow.workflow_access import (
 from ray.workflow.common import (
     Workflow,
     WorkflowStatus,
-    WorkflowOutputType,
     WorkflowExecutionResult,
     StepType,
     StepID,
     WorkflowData,
     WorkflowStaticRef,
-    asyncio_run,
     CheckpointMode,
 )
 
@@ -43,21 +40,11 @@ WaitResult = Tuple[List[Any], List[Workflow]]
 logger = logging.getLogger(__name__)
 
 
-def _resolve_object_ref(ref: ObjectRef) -> Tuple[Any, ObjectRef]:
-    """
-    Resolves the ObjectRef into the object instance.
-
-    Returns:
-        The object instance and the direct ObjectRef to the instance.
-    """
-    last_ref = ref
-    while True:
-        if isinstance(ref, ObjectRef):
-            last_ref = ref
-        else:
-            break
-        ref = ray.get(last_ref)
-    return ref, last_ref
+def _resolve_static_workflow_ref(workflow_ref: WorkflowStaticRef):
+    """Get the output of a workflow step with the step ID and ObjectRef."""
+    while isinstance(workflow_ref, WorkflowStaticRef):
+        workflow_ref = ray.get(workflow_ref.ref)
+    return workflow_ref
 
 
 def _resolve_dynamic_workflow_refs(workflow_refs: "List[WorkflowRef]"):
@@ -73,7 +60,6 @@ def _resolve_dynamic_workflow_refs(workflow_refs: "List[WorkflowRef]"):
     workflow_manager = get_or_create_management_actor()
     context = workflow_context.get_workflow_step_context()
     workflow_id = context.workflow_id
-    storage_url = context.storage_url
     workflow_ref_mapping = []
     for workflow_ref in workflow_refs:
         step_ref = ray.get(
@@ -84,7 +70,7 @@ def _resolve_dynamic_workflow_refs(workflow_refs: "List[WorkflowRef]"):
         get_cached_step = False
         if step_ref is not None:
             try:
-                output, _ = _resolve_object_ref(step_ref)
+                output = _resolve_static_workflow_ref(step_ref)
                 get_cached_step = True
             except Exception:
                 get_cached_step = False
@@ -100,9 +86,9 @@ def _resolve_dynamic_workflow_refs(workflow_refs: "List[WorkflowRef]"):
                     f"Current step: '{current_step_id}'"
                 )
                 step_ref = recovery.resume_workflow_step(
-                    workflow_id, workflow_ref.step_id, storage_url, None
+                    workflow_id, workflow_ref.step_id, None
                 ).persisted_output
-                output, _ = _resolve_object_ref(step_ref)
+                output = _resolve_static_workflow_ref(step_ref)
         workflow_ref_mapping.append(output)
     return workflow_ref_mapping
 
@@ -152,13 +138,9 @@ def _execute_workflow(workflow: "Workflow") -> "WorkflowExecutionResult":
                 extra_options = w.data.step_options.ray_options
                 # The input workflow is not a reference to an executed
                 # workflow.
-                output = execute_workflow(w).persisted_output
-                static_ref = WorkflowStaticRef(
-                    step_id=w.step_id,
-                    ref=output,
-                    _resolve_like_object_ref_in_args=extra_options.get(
-                        "_resolve_like_object_ref_in_args", False
-                    ),
+                static_ref = execute_workflow(w).persisted_output
+                static_ref._resolve_like_object_ref_in_args = extra_options.get(
+                    "_resolve_like_object_ref_in_args", False
                 )
             workflow_outputs.append(static_ref)
 
@@ -214,6 +196,11 @@ def _execute_workflow(workflow: "Workflow") -> "WorkflowExecutionResult":
             # TODO: [Possible flaky bug] Here the RUNNING state may
             # be recorded earlier than SUCCESSFUL. This caused some
             # confusion during development.
+
+            # convert into workflow static ref for step status record.
+            volatile_output = WorkflowStaticRef.from_output(
+                workflow.step_id, volatile_output
+            )
             _record_step_status(
                 workflow.step_id, WorkflowStatus.RUNNING, [volatile_output]
             )
@@ -255,15 +242,17 @@ def execute_workflow(workflow: Workflow) -> "WorkflowExecutionResult":
         workflow = result.persisted_output.workflow
         context = result.persisted_output.context
 
-    # Convert the outputs into ObjectRefs.
-    if not isinstance(result.persisted_output, WorkflowOutputType):
-        result.persisted_output = ray.put(result.persisted_output)
-    if not isinstance(result.persisted_output, WorkflowOutputType):
-        result.volatile_output = ray.put(result.volatile_output)
+    # Convert the outputs into WorkflowStaticRef.
+    result.persisted_output = WorkflowStaticRef.from_output(
+        workflow.step_id, result.persisted_output
+    )
+    result.volatile_output = WorkflowStaticRef.from_output(
+        workflow.step_id, result.volatile_output
+    )
     return result
 
 
-async def _write_step_inputs(
+def _write_step_inputs(
     wf_storage: workflow_storage.WorkflowStorage, step_id: StepID, inputs: WorkflowData
 ) -> None:
     """Save workflow inputs."""
@@ -273,24 +262,21 @@ async def _write_step_inputs(
         # with plasma store object in memory.
         args_obj = ray.get(inputs.inputs.args)
     workflow_id = wf_storage._workflow_id
-    storage = wf_storage._storage
-    save_tasks = [
-        # TODO (Alex): Handle the json case better?
-        wf_storage._put(wf_storage._key_step_input_metadata(step_id), metadata, True),
-        wf_storage._put(
-            wf_storage._key_step_user_metadata(step_id), inputs.user_metadata, True
-        ),
-        serialization.dump_to_storage(
-            wf_storage._key_step_function_body(step_id),
-            inputs.func_body,
-            workflow_id,
-            storage,
-        ),
-        serialization.dump_to_storage(
-            wf_storage._key_step_args(step_id), args_obj, workflow_id, storage
-        ),
-    ]
-    await asyncio.gather(*save_tasks)
+
+    # TODO (Alex): Handle the json case better?
+    wf_storage._put(wf_storage._key_step_input_metadata(step_id), metadata, True),
+    wf_storage._put(
+        wf_storage._key_step_user_metadata(step_id), inputs.user_metadata, True
+    ),
+    serialization.dump_to_storage(
+        wf_storage._key_step_function_body(step_id),
+        inputs.func_body,
+        workflow_id,
+        wf_storage,
+    ),
+    serialization.dump_to_storage(
+        wf_storage._key_step_args(step_id), args_obj, workflow_id, wf_storage
+    ),
 
 
 def commit_step(
@@ -317,7 +303,6 @@ def commit_step(
             # its input (again).
             if w.ref is None:
                 tasks.append(_write_step_inputs(store, w.step_id, w.data))
-        asyncio_run(asyncio.gather(*tasks))
 
     context = workflow_context.get_workflow_step_context()
     store.save_step_output(
@@ -356,28 +341,39 @@ def _wrap_run(
     """
     exception = None
     result = None
+    done = False
     # max_retries are for application level failure.
     # For ray failure, we should use max_retries.
-    for i in range(runtime_options.max_retries):
-        logger.info(
-            f"{get_step_status_info(WorkflowStatus.RUNNING)}"
-            f"\t[{i + 1}/{runtime_options.max_retries}]"
-        )
+    i = 0
+    while not done:
+        if i == 0:
+            logger.info(f"{get_step_status_info(WorkflowStatus.RUNNING)}")
+        else:
+            total_retries = (
+                runtime_options.max_retries
+                if runtime_options.max_retries != -1
+                else "inf"
+            )
+            logger.info(
+                f"{get_step_status_info(WorkflowStatus.RUNNING)}"
+                f"\tretries: [{i}/{total_retries}]"
+            )
         try:
             result = func(*args, **kwargs)
             exception = None
-            break
+            done = True
         except BaseException as e:
-            if i + 1 == runtime_options.max_retries:
+            if i == runtime_options.max_retries:
                 retry_msg = "Maximum retry reached, stop retry."
+                exception = e
+                done = True
             else:
                 retry_msg = "The step will be retried."
+                i += 1
             logger.error(
                 f"{workflow_context.get_name()} failed with error message"
                 f" {e}. {retry_msg}"
             )
-            exception = e
-
     step_type = runtime_options.step_type
     if runtime_options.catch_exceptions:
         if step_type == StepType.FUNCTION:
@@ -532,6 +528,7 @@ def _workflow_step_executor(
         volatile_output = volatile_output.run_async(
             workflow_context.get_current_workflow_id()
         )
+        volatile_output = WorkflowStaticRef.from_output(step_id, volatile_output)
     return persisted_output, volatile_output
 
 
@@ -571,10 +568,7 @@ def _workflow_wait_executor(
 
     # Part 2: Resolve any ready workflows.
     ready_workflows, remaining_workflows = baked_inputs.wait(**wait_options)
-    ready_objects = []
-    for w in ready_workflows:
-        obj, _ = _resolve_object_ref(w.ref.ref)
-        ready_objects.append(obj)
+    ready_objects = [_resolve_static_workflow_ref(w.ref) for w in ready_workflows]
     persisted_output = (ready_objects, remaining_workflows)
 
     # Part 3: Save the outputs.
@@ -606,6 +600,16 @@ def _workflow_wait_executor_remote(
     )
 
 
+class _SelfDereference:
+    """A object that dereferences static object ref during deserialization."""
+
+    def __init__(self, x):
+        self.x = x
+
+    def __reduce__(self):
+        return _resolve_static_workflow_ref, (self.x,)
+
+
 @dataclass
 class _BakedWorkflowInputs:
     """This class stores pre-processed inputs for workflow step execution.
@@ -634,11 +638,13 @@ class _BakedWorkflowInputs:
             Instances of arguments.
         """
         objects_mapping = []
-        for obj_ref in self.workflow_outputs:
-            if obj_ref._resolve_like_object_ref_in_args:
-                obj = obj_ref.ref
+        for static_workflow_ref in self.workflow_outputs:
+            if static_workflow_ref._resolve_like_object_ref_in_args:
+                # Keep it unresolved as an ObjectRef. Then we resolve it
+                # later in the arguments, like how Ray does with ObjectRefs.
+                obj = ray.put(_SelfDereference(static_workflow_ref))
             else:
-                obj, ref = _resolve_object_ref(obj_ref.ref)
+                obj = _resolve_static_workflow_ref(static_workflow_ref)
             objects_mapping.append(obj)
 
         workflow_ref_mapping = _resolve_dynamic_workflow_refs(self.workflow_refs)

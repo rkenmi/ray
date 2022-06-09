@@ -78,13 +78,19 @@ class MockWorkerClient : public rpc::CoreWorkerClientInterface {
   instrumented_io_context &io_service_;
 };
 
-static std::unordered_set<std::string> valid_uris;
+static std::unordered_map<std::string, int> runtime_env_reference;
+
+static int GetReferenceCount(const std::string serialized_runtime_env) {
+  auto it = runtime_env_reference.find(serialized_runtime_env);
+  return it == runtime_env_reference.end() ? 0 : it->second;
+}
 
 class MockRuntimeEnvAgentClient : public rpc::RuntimeEnvAgentClientInterface {
  public:
-  void CreateRuntimeEnv(const rpc::CreateRuntimeEnvRequest &request,
-                        const rpc::ClientCallback<rpc::CreateRuntimeEnvReply> &callback) {
-    rpc::CreateRuntimeEnvReply reply;
+  void GetOrCreateRuntimeEnv(
+      const rpc::GetOrCreateRuntimeEnvRequest &request,
+      const rpc::ClientCallback<rpc::GetOrCreateRuntimeEnvReply> &callback) {
+    rpc::GetOrCreateRuntimeEnvReply reply;
     if (request.serialized_runtime_env() == BAD_RUNTIME_ENV) {
       reply.set_status(rpc::AGENT_RPC_STATUS_FAILED);
       reply.set_error_message(BAD_RUNTIME_ENV_ERROR_MSG);
@@ -93,8 +99,11 @@ class MockRuntimeEnvAgentClient : public rpc::RuntimeEnvAgentClientInterface {
       if (google::protobuf::util::JsonStringToMessage(request.serialized_runtime_env(),
                                                       &runtime_env)
               .ok()) {
-        for (auto uri : runtime_env.uris().py_modules_uris()) {
-          valid_uris.emplace(uri);
+        auto it = runtime_env_reference.find(request.serialized_runtime_env());
+        if (it == runtime_env_reference.end()) {
+          runtime_env_reference[request.serialized_runtime_env()] = 1;
+        } else {
+          runtime_env_reference[request.serialized_runtime_env()] += 1;
         }
       }
       reply.set_status(rpc::AGENT_RPC_STATUS_OK);
@@ -103,12 +112,14 @@ class MockRuntimeEnvAgentClient : public rpc::RuntimeEnvAgentClientInterface {
     callback(Status::OK(), reply);
   };
 
-  void DeleteURIs(const rpc::DeleteURIsRequest &request,
-                  const rpc::ClientCallback<rpc::DeleteURIsReply> &callback) {
-    for (auto uri : request.uris()) {
-      valid_uris.erase(uri);
-    }
-    rpc::DeleteURIsReply reply;
+  void DeleteRuntimeEnvIfPossible(
+      const rpc::DeleteRuntimeEnvIfPossibleRequest &request,
+      const rpc::ClientCallback<rpc::DeleteRuntimeEnvIfPossibleReply> &callback) {
+    auto it = runtime_env_reference.find(request.serialized_runtime_env());
+    RAY_CHECK(it != runtime_env_reference.end());
+    runtime_env_reference[request.serialized_runtime_env()] -= 1;
+    RAY_CHECK(runtime_env_reference[request.serialized_runtime_env()] >= 0);
+    rpc::DeleteRuntimeEnvIfPossibleReply reply;
     reply.set_status(rpc::AGENT_RPC_STATUS_OK);
     callback(Status::OK(), reply);
   };
@@ -182,7 +193,7 @@ class WorkerPoolMock : public WorkerPool {
   int NumWorkersStarting() const {
     int total = 0;
     for (auto &state_entry : states_by_lang_) {
-      for (auto &process_entry : state_entry.second.starting_worker_processes) {
+      for (auto &process_entry : state_entry.second.worker_processes) {
         total += process_entry.second.num_starting_workers;
       }
     }
@@ -192,7 +203,11 @@ class WorkerPoolMock : public WorkerPool {
   int NumWorkerProcessesStarting() const {
     int total = 0;
     for (auto &entry : states_by_lang_) {
-      total += entry.second.starting_worker_processes.size();
+      for (auto process : entry.second.worker_processes) {
+        if (process.second.num_starting_workers != 0) {
+          total += 1;
+        }
+      }
     }
     return total;
   }
@@ -200,6 +215,11 @@ class WorkerPoolMock : public WorkerPool {
   int NumSpillWorkerStarting() const {
     auto state = states_by_lang_.find(Language::PYTHON)->second;
     return state.spill_io_worker_state.num_starting_io_workers;
+  }
+
+  int NumSpillWorkerStarted() const {
+    auto state = states_by_lang_.find(Language::PYTHON)->second;
+    return state.spill_io_worker_state.started_io_workers.size();
   }
 
   int NumRestoreWorkerStarting() const {
@@ -415,7 +435,8 @@ class WorkerPoolTest : public ::testing::Test {
 
   virtual void TearDown() {
     AssertNoLeaks();
-    valid_uris.clear();
+    runtime_env_reference.clear();
+    worker_pool_->all_jobs_.clear();
   }
 
   void AssertNoLeaks() { ASSERT_EQ(worker_pool_->pending_exit_idle_workers_.size(), 0); }
@@ -620,6 +641,21 @@ TEST_F(WorkerPoolTest, HandleWorkerRegistration) {
     // Check that we cannot lookup the worker after it's disconnected.
     ASSERT_EQ(worker_pool_->GetRegisteredWorker(worker->Connection()), nullptr);
   }
+
+  {
+    // Test the case where DisconnectClient happens after RegisterClientRequest but before
+    // AnnounceWorkerPort.
+    auto [proc, token] = worker_pool_->StartWorkerProcess(
+        Language::PYTHON, rpc::WorkerType::WORKER, JOB_ID, &status);
+    auto worker = worker_pool_->CreateWorker(Process(), Language::PYTHON);
+    ASSERT_EQ(worker_pool_->NumWorkersStarting(), 1);
+    RAY_CHECK_OK(worker_pool_->RegisterWorker(
+        worker, proc.GetId(), worker_pool_->GetStartupToken(proc), [](Status, int) {}));
+    worker->SetStartupToken(worker_pool_->GetStartupToken(proc));
+    worker_pool_->DisconnectWorker(
+        worker, /*disconnect_type=*/rpc::WorkerExitType::INTENDED_EXIT);
+    ASSERT_EQ(worker_pool_->NumWorkersStarting(), 0);
+  }
 }
 
 TEST_F(WorkerPoolTest, HandleUnknownWorkerRegistration) {
@@ -712,10 +748,11 @@ TEST_F(WorkerPoolTest, StartWorkerWithDynamicOptionsCommand) {
   actor_jvm_options.insert(
       actor_jvm_options.end(),
       {"-Dmy-actor.hello=foo", "-Dmy-actor.world=bar", "-Xmx2g", "-Xms1g"});
-  auto task_id = TaskID::ForDriverTask(JOB_ID);
-  auto actor_id = ActorID::Of(JOB_ID, task_id, 1);
+  JobID job_id = JobID::FromInt(12345);
+  auto task_id = TaskID::ForDriverTask(job_id);
+  auto actor_id = ActorID::Of(job_id, task_id, 1);
   TaskSpecification task_spec = ExampleTaskSpec(
-      ActorID::Nil(), Language::JAVA, JOB_ID, actor_id, actor_jvm_options, task_id);
+      ActorID::Nil(), Language::JAVA, job_id, actor_id, actor_jvm_options, task_id);
 
   rpc::JobConfig job_config = rpc::JobConfig();
   job_config.add_code_search_path("/test/code_search_path");
@@ -724,7 +761,7 @@ TEST_F(WorkerPoolTest, StartWorkerWithDynamicOptionsCommand) {
   job_config.add_jvm_options("-Xms500m");
   job_config.add_jvm_options("-Dmy-job.hello=world");
   job_config.add_jvm_options("-Dmy-job.foo=bar");
-  worker_pool_->HandleJobStarted(JOB_ID, job_config);
+  worker_pool_->HandleJobStarted(job_id, job_config);
 
   ASSERT_NE(worker_pool_->PopWorkerSync(task_spec), nullptr);
   const auto real_command =
@@ -751,7 +788,7 @@ TEST_F(WorkerPoolTest, StartWorkerWithDynamicOptionsCommand) {
   // Entry point
   expected_command.push_back("MainClass");
   ASSERT_EQ(real_command, expected_command);
-  worker_pool_->HandleJobFinished(JOB_ID);
+  worker_pool_->HandleJobFinished(job_id);
 }
 
 TEST_F(WorkerPoolTest, PopWorkerMultiTenancy) {
@@ -1501,40 +1538,39 @@ TEST_F(WorkerPoolTest, RuntimeEnvUriReferenceJobLevel) {
     job_config.mutable_runtime_env_info()->CopyFrom(runtime_env_info);
     // Start job.
     worker_pool_->HandleJobStarted(job_id, job_config);
-    ASSERT_EQ(valid_uris.size(), 1);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 1);
     // Finish the job.
     worker_pool_->HandleJobFinished(job_id);
-    ASSERT_EQ(valid_uris.size(), 0);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 0);
   }
 
   // Second part, test start job without eager installed runtime env.
   {
-    auto job_id = JobID::FromInt(12345);
-    std::string uri = "s3://123";
+    auto job_id = JobID::FromInt(67890);
+    std::string uri = "s3://678";
     auto runtime_env_info = ExampleRuntimeEnvInfo({uri}, false);
     rpc::JobConfig job_config;
     job_config.mutable_runtime_env_info()->CopyFrom(runtime_env_info);
     // Start job.
     worker_pool_->HandleJobStarted(job_id, job_config);
-    ASSERT_EQ(valid_uris.size(), 0);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 0);
     // Finish the job.
     worker_pool_->HandleJobFinished(job_id);
-    ASSERT_EQ(valid_uris.size(), 0);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 0);
   }
 }
 
 TEST_F(WorkerPoolTest, RuntimeEnvUriReferenceWorkerLevel) {
-  auto job_id = JobID::FromInt(12345);
-  std::string uri = "s3://123";
-
   // First part, test URI reference with eager install.
   {
+    auto job_id = JobID::FromInt(12345);
+    std::string uri = "s3://123";
     auto runtime_env_info = ExampleRuntimeEnvInfo({uri}, true);
     rpc::JobConfig job_config;
     job_config.mutable_runtime_env_info()->CopyFrom(runtime_env_info);
     // Start job with eager installed runtime env.
     worker_pool_->HandleJobStarted(job_id, job_config);
-    ASSERT_EQ(valid_uris.size(), 1);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 1);
     // Start actor with runtime env.
     auto actor_creation_id = ActorID::Of(job_id, TaskID::ForDriverTask(job_id), 1);
     const auto actor_creation_task_spec =
@@ -1546,7 +1582,7 @@ TEST_F(WorkerPoolTest, RuntimeEnvUriReferenceWorkerLevel) {
                         TaskID::FromRandom(JobID::Nil()),
                         runtime_env_info);
     auto popped_actor_worker = worker_pool_->PopWorkerSync(actor_creation_task_spec);
-    ASSERT_EQ(valid_uris.size(), 1);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 2);
     // Start task with runtime env.
     const auto normal_task_spec = ExampleTaskSpec(ActorID::Nil(),
                                                   Language::PYTHON,
@@ -1556,20 +1592,22 @@ TEST_F(WorkerPoolTest, RuntimeEnvUriReferenceWorkerLevel) {
                                                   TaskID::FromRandom(JobID::Nil()),
                                                   runtime_env_info);
     auto popped_normal_worker = worker_pool_->PopWorkerSync(actor_creation_task_spec);
-    ASSERT_EQ(valid_uris.size(), 1);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 3);
     // Disconnect actor worker.
     worker_pool_->DisconnectWorker(popped_actor_worker, rpc::WorkerExitType::IDLE_EXIT);
-    ASSERT_EQ(valid_uris.size(), 1);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 2);
     // Disconnect task worker.
     worker_pool_->DisconnectWorker(popped_normal_worker, rpc::WorkerExitType::IDLE_EXIT);
-    ASSERT_EQ(valid_uris.size(), 1);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 1);
     // Finish the job.
     worker_pool_->HandleJobFinished(job_id);
-    ASSERT_EQ(valid_uris.size(), 0);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 0);
   }
 
   // Second part, test URI reference without eager install.
   {
+    auto job_id = JobID::FromInt(67890);
+    std::string uri = "s3://678";
     auto runtime_env_info = ExampleRuntimeEnvInfo({uri}, true);
     auto runtime_env_info_without_eager_install = ExampleRuntimeEnvInfo({uri}, false);
     rpc::JobConfig job_config;
@@ -1577,7 +1615,7 @@ TEST_F(WorkerPoolTest, RuntimeEnvUriReferenceWorkerLevel) {
         runtime_env_info_without_eager_install);
     // Start job without eager installed runtime env.
     worker_pool_->HandleJobStarted(job_id, job_config);
-    ASSERT_EQ(valid_uris.size(), 0);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 0);
     // Start actor with runtime env.
     auto actor_creation_id = ActorID::Of(job_id, TaskID::ForDriverTask(job_id), 2);
     const auto actor_creation_task_spec =
@@ -1589,19 +1627,19 @@ TEST_F(WorkerPoolTest, RuntimeEnvUriReferenceWorkerLevel) {
                         TaskID::FromRandom(JobID::Nil()),
                         runtime_env_info);
     auto popped_actor_worker = worker_pool_->PopWorkerSync(actor_creation_task_spec);
-    ASSERT_EQ(valid_uris.size(), 1);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 1);
     // Start task with runtime env.
     auto popped_normal_worker = worker_pool_->PopWorkerSync(actor_creation_task_spec);
-    ASSERT_EQ(valid_uris.size(), 1);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 2);
     // Disconnect actor worker.
     worker_pool_->DisconnectWorker(popped_actor_worker, rpc::WorkerExitType::IDLE_EXIT);
-    ASSERT_EQ(valid_uris.size(), 1);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 1);
     // Disconnect task worker.
     worker_pool_->DisconnectWorker(popped_normal_worker, rpc::WorkerExitType::IDLE_EXIT);
-    ASSERT_EQ(valid_uris.size(), 0);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 0);
     // Finish the job.
     worker_pool_->HandleJobFinished(job_id);
-    ASSERT_EQ(valid_uris.size(), 0);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 0);
   }
 }
 
@@ -1614,7 +1652,7 @@ TEST_F(WorkerPoolTest, RuntimeEnvUriReferenceWithMultipleWorkers) {
   job_config.mutable_runtime_env_info()->CopyFrom(runtime_env_info);
   // Start job without eager installed runtime env.
   worker_pool_->HandleJobStarted(job_id, job_config);
-  ASSERT_EQ(valid_uris.size(), 0);
+  ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 0);
 
   // First part, test normal case with all worker registered.
   {
@@ -1633,7 +1671,7 @@ TEST_F(WorkerPoolTest, RuntimeEnvUriReferenceWithMultipleWorkers) {
       auto popped_actor_worker = worker_pool_->PopWorkerSync(actor_creation_task_spec);
       ASSERT_NE(popped_actor_worker, nullptr);
       workers.push_back(popped_actor_worker);
-      ASSERT_EQ(valid_uris.size(), 1);
+      ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 1);
     }
     // Make sure only one worker process has been started.
     ASSERT_EQ(worker_pool_->GetProcessSize(), 1);
@@ -1641,7 +1679,7 @@ TEST_F(WorkerPoolTest, RuntimeEnvUriReferenceWithMultipleWorkers) {
     for (auto &worker : workers) {
       worker_pool_->DisconnectWorker(worker, rpc::WorkerExitType::IDLE_EXIT);
     }
-    ASSERT_EQ(valid_uris.size(), 0);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 0);
   }
 
   // Second part, test corner case with some worker registration timeout.
@@ -1661,19 +1699,19 @@ TEST_F(WorkerPoolTest, RuntimeEnvUriReferenceWithMultipleWorkers) {
     // Only one worker registration. All the other worker registration times out.
     auto popped_actor_worker = worker_pool_->PopWorkerSync(
         actor_creation_task_spec, true, &status, NUM_WORKERS_PER_PROCESS_JAVA - 1);
-    ASSERT_EQ(valid_uris.size(), 1);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 1);
     // Disconnect actor worker.
     worker_pool_->DisconnectWorker(popped_actor_worker, rpc::WorkerExitType::IDLE_EXIT);
-    ASSERT_EQ(valid_uris.size(), 1);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 1);
     // Sleep for a while to wait worker registration timeout.
     std::this_thread::sleep_for(
         std::chrono::seconds(WORKER_REGISTER_TIMEOUT_SECONDS + 1));
-    ASSERT_EQ(valid_uris.size(), 0);
+    ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 0);
   }
 
   // Finish the job.
   worker_pool_->HandleJobFinished(job_id);
-  ASSERT_EQ(valid_uris.size(), 0);
+  ASSERT_EQ(GetReferenceCount(runtime_env_info.serialized_runtime_env()), 0);
 }
 
 TEST_F(WorkerPoolTest, CacheWorkersByRuntimeEnvHash) {
@@ -1826,7 +1864,7 @@ TEST_F(WorkerPoolTest, PopWorkerStatus) {
   /* Test PopWorkerStatus JobConfigMissing */
   // Create a task by unregistered job id.
   auto job_id = JobID::FromInt(123);
-  task_spec = ExampleTaskSpec(ActorID::Nil(), Language::JAVA, job_id);
+  task_spec = ExampleTaskSpec(ActorID::Nil(), Language::PYTHON, job_id);
   popped_worker = worker_pool_->PopWorkerSync(task_spec, true, &status);
   // PopWorker failed and the status is `JobConfigMissing`.
   ASSERT_EQ(popped_worker, nullptr);
@@ -1871,12 +1909,12 @@ TEST_F(WorkerPoolTest, PopWorkerStatus) {
   ASSERT_NE(popped_worker, nullptr);
   ASSERT_EQ(status, PopWorkerStatus::OK);
 
-  /* Test PopWorkerStatus RuntimeEnvCreationFailed */
+  /* Test PopWorkerStatus WorkerPendingRegistration */
   // Create a task without push worker.
   popped_worker = worker_pool_->PopWorkerSync(task_spec, false, &status);
   ASSERT_EQ(popped_worker, nullptr);
   // PopWorker failed while the timer was triggered and the status is
-  // `RuntimeEnvCreationFailed`.
+  // `WorkerPendingRegistration`.
   ASSERT_EQ(status, PopWorkerStatus::WorkerPendingRegistration);
   worker_pool_->ClearProcesses();
 }
@@ -1906,6 +1944,24 @@ TEST_F(WorkerPoolTest, TestIOWorkerFailureAndSpawn) {
     worker_pool_->OnWorkerStarted(worker);
     worker_pool_->PushSpillWorker(worker);
   }
+
+  {
+    // Test the case where DisconnectClient happens after RegisterClientRequest but before
+    // AnnounceWorkerPort.
+    auto status = PopWorkerStatus::OK;
+    auto [proc, token] = worker_pool_->StartWorkerProcess(
+        rpc::Language::PYTHON, rpc::WorkerType::SPILL_WORKER, JobID::Nil(), &status);
+    ASSERT_EQ(status, PopWorkerStatus::OK);
+    auto worker = CreateSpillWorker(Process());
+    RAY_CHECK_OK(
+        worker_pool_->RegisterWorker(worker, proc.GetId(), token, [](Status, int) {}));
+    // The worker failed before announcing the worker port (i.e. OnworkerStarted)
+    worker_pool_->DisconnectWorker(
+        worker, /*disconnect_type=*/rpc::WorkerExitType::SYSTEM_ERROR_EXIT);
+  }
+
+  ASSERT_EQ(worker_pool_->NumSpillWorkerStarting(), 0);
+  ASSERT_EQ(worker_pool_->NumSpillWorkerStarted(), MAX_IO_WORKER_SIZE);
 
   // Pop spill workers should work.
 
