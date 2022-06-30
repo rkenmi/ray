@@ -80,8 +80,8 @@ class AwsEventPublisher(EventPublisher):
         node_context: NodeContext = event_dict.get("node_context", {})
         sns_topic_arn, params = self.uri, kwargs
         message = {
-            **event_dict,
             **params,
+            **event_dict,
             "state": event.state,
             "stateSequence": event.value - 1,  # zero-index sequencing
             "stateDetailStatus": "SUCCESS",
@@ -108,8 +108,10 @@ class AwsEventPublisher(EventPublisher):
         sns_topic_arn, params = self.uri, kwargs
         message = self._construct_sns_message(event_data, **kwargs)
         try:
-            sns_client.publish(sns_topic_arn, json.dumps(message))
+            json_message_payload = json.dumps(message)
+            sns_client.publish(sns_topic_arn, json_message_payload)
             logger.info("Published SNS event {} to {}".format(event.name, sns_topic_arn))
+            logger.debug("Published SNS event payload: {}".format(json_message_payload))
         except ClientError as exc:
             cli_logger.abort(
                 "{} Error caught when publishing {} create cluster events to SNS",
