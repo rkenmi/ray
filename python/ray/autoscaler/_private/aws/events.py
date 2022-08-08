@@ -84,7 +84,6 @@ class AwsEventPublisher(EventPublisher):
             **event_dict,
             "state": event.state,
             "stateSequence": event.value - 1,  # zero-index sequencing
-            "stateDetailStatus": "SUCCESS",
             "timestamp": round(time.time() * 1000),
         }
 
