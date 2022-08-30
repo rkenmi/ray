@@ -49,7 +49,7 @@
             },
             "parameters": {
               "type": "object",
-              "description": "additional metadata to include into each event notification"
+              "description": "additional parameters injected into each outgoing event notification"
             }
           }
         },

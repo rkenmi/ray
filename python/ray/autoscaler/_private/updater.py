@@ -326,7 +326,9 @@ class NodeUpdater:
 
         deadline = time.time() + AUTOSCALER_NODE_START_WAIT_S
         self.wait_ready(deadline)
-        global_event_system.execute_callback(CreateClusterEvent.ssh_control_acquired, {"node_context": node_context})
+        global_event_system.execute_callback(
+            CreateClusterEvent.ssh_control_acquired, {"node_context": node_context}
+        )
 
         node_tags = self.provider.node_tags(self.node_id)
         logger.debug("Node tags: {}".format(str(node_tags)))
@@ -399,7 +401,7 @@ class NodeUpdater:
                     ):
                         global_event_system.execute_callback(
                             CreateClusterEvent.run_initialization_cmd,
-                            {"node_context": node_context}
+                            {"node_context": node_context},
                         )
                         with LogTimer(
                             self.log_prefix + "Initialization commands",
@@ -408,7 +410,7 @@ class NodeUpdater:
                             for cmd in self.initialization_commands:
                                 global_event_system.execute_callback(
                                     CreateClusterEvent.run_initialization_cmd,
-                                    {"command": cmd, "node_context": node_context}
+                                    {"command": cmd, "node_context": node_context},
                                 )
                                 try:
                                     # Overriding the existing SSHOptions class
@@ -454,7 +456,7 @@ class NodeUpdater:
                     ):
                         global_event_system.execute_callback(
                             CreateClusterEvent.run_setup_cmd,
-                            {"node_context": node_context}
+                            {"node_context": node_context},
                         )
                         with LogTimer(
                             self.log_prefix + "Setup commands", show_status=True
@@ -463,7 +465,8 @@ class NodeUpdater:
                             total = len(self.setup_commands)
                             for i, cmd in enumerate(self.setup_commands):
                                 global_event_system.execute_callback(
-                                    CreateClusterEvent.run_setup_cmd, {"command": cmd, "node_context": node_context}
+                                    CreateClusterEvent.run_setup_cmd,
+                                    {"command": cmd, "node_context": node_context},
                                 )
                                 if cli_logger.verbosity == 0 and len(cmd) > 30:
                                     cmd_to_print = cf.bold(cmd[:30]) + "..."
@@ -492,7 +495,9 @@ class NodeUpdater:
         with cli_logger.group(
             "Starting the Ray runtime", _numbered=("[]", 7, NUM_SETUP_STEPS)
         ):
-            global_event_system.execute_callback(CreateClusterEvent.start_ray_runtime, {"node_context": node_context})
+            global_event_system.execute_callback(
+                CreateClusterEvent.start_ray_runtime, {"node_context": node_context}
+            )
             with LogTimer(self.log_prefix + "Ray start commands", show_status=True):
                 for cmd in self.ray_start_commands:
 

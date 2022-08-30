@@ -1,5 +1,5 @@
 import functools
-from abc import abstractmethod, ABC
+from abc import ABC, abstractmethod
 from enum import Enum, auto
 from typing import Any, Callable, Dict, List, Optional, Union
 
@@ -7,8 +7,8 @@ from ray.autoscaler._private.cli_logger import cli_logger
 
 
 class EventSequence:
-    """Extensible class for building custom events.
-    """
+    """Extensible class for building custom events."""
+
     @property
     @abstractmethod
     def state(self) -> str:
@@ -26,8 +26,8 @@ class EventSequence:
 
 
 class StateEvent(Enum):
-    """Events to track with an associated state identifier.
-    """
+    """Events to track with an associated state identifier."""
+
     @property
     def state(self) -> str:
         raise NotImplementedError("State must be implemented by a sub-class")
@@ -53,6 +53,7 @@ class CreateClusterEvent(StateEvent):
         cluster_booting_completed : Invoked after cluster booting
             is completed.
     """
+
     @property
     def state(self) -> str:
         return "DISPATCHED"
@@ -72,6 +73,7 @@ class CreateClusterEvent(StateEvent):
 
 RayEvent = Union[EventSequence, StateEvent]
 
+
 class _EventSystem:
     """Event system that handles storing and calling callbacks for events.
 
@@ -88,7 +90,7 @@ class _EventSystem:
         event: RayEvent,
         callback: Union[Callable[[Dict], None], List[Callable[[Dict], None]]],
         *args,
-        **kwargs
+        **kwargs,
     ):
         """Stores callback handler for event.
 
@@ -119,7 +121,7 @@ class _EventSystem:
         if event_data is None:
             event_data = {}
 
-        event_data["event"] = event_data["event_name"] = event
+        event_data["event_name"] = event
         if event in self.callback_map:
             for callback in self.callback_map[event]:
                 callback(event_data)
@@ -136,10 +138,7 @@ class _EventSystem:
 
 
 class EventCallbackHandler:
-    def __init__(self,
-                 handler: Callable,
-                 *args,
-                 **kwargs):
+    def __init__(self, handler: Callable, *args, **kwargs):
         """A helper class containing a callable object with its associated args and kwargs.
         Args:
             handler: A callable object.
@@ -164,8 +163,7 @@ class EventCallbackHandler:
 
 
 class EventPublisher(ABC):
-    uri: str
-    _event_base_params: Dict[str, Any]
+    """Event publisher abstract class for publishing event notifications."""
 
     def __init__(self, events_config: Dict[str, Any]):
         """Constructor for event publisher.
@@ -173,10 +171,12 @@ class EventPublisher(ABC):
             events_config: A dict loaded from the autoscaler YAML config.
         """
         self.validate_config(events_config)
-        self.events_config = events_config
-        _event_base_params = events_config.get("parameters", {})
+        self._config = events_config
+        self._event_base_params = _event_base_params = events_config.get(
+            "parameters", {}
+        )
         self.validate_event_base_params(_event_base_params)
-        self._event_base_params = _event_base_params
+        self._uri = events_config["notification_uri"]
 
     def add_callback(self, event: RayEvent):
         """Adds a callback handler for a given event.
@@ -185,11 +185,17 @@ class EventPublisher(ABC):
         """
         callback_handlers: List[EventCallbackHandler] = self.get_callback_handlers()
         for cb in callback_handlers:
-            global_event_system.add_callback_handler(event, cb.handler, *cb.args, **cb.kwargs)
-            cli_logger.info(f"Added callback handler {cb.handler.__name__} for event {event.name}")
+            global_event_system.add_callback_handler(
+                event, cb.handler, *cb.args, **cb.kwargs
+            )
+            cli_logger.info(
+                f"Added callback handler {cb.handler.__name__} for event {event.name}"
+            )
 
     def get_callback_handlers(self) -> List[EventCallbackHandler]:
-        raise NotImplementedError("Event publisher sub-classes must provide their own callback handlers.")
+        raise NotImplementedError(
+            "Event publisher sub-classes must provide their own callback handlers."
+        )
 
     @staticmethod
     def publish(event: RayEvent, event_data: Optional[Dict[str, Any]] = None):
@@ -204,21 +210,30 @@ class EventPublisher(ABC):
         raise NotImplementedError("Method is not implemented")
 
     @property
-    @abstractmethod
     def config(self) -> Dict[str, Any]:
         """Configuration for event notifications.
-        Holds outgoing event parameters, event notification URI, and other additional metadata.
+        Holds outgoing event base parameters, the notification URI,
+            and other additional metadata.
+
         Returns: configuration dict
         """
-        raise NotImplementedError("Configuration is not defined")
+        return self._config
 
     @property
-    @abstractmethod
     def event_base_params(self) -> Dict[str, Any]:
-        """Base parameters that will be injected into every outgoing event notification.
+        """Base parameters injected into every outgoing event notification.
+
         Returns: parameters dict
         """
-        raise NotImplementedError("Configuration is not defined")
+        return self._event_base_params
+
+    @property
+    def uri(self) -> str:
+        """URI endpoint for outgoing event notifications.
+
+        Returns: uri string
+        """
+        return self._uri
 
 
 global_event_system = _EventSystem()
